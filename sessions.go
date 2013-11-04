@@ -236,9 +236,17 @@ func (s *MemcacheStore) save(r *http.Request,
 	if err != nil {
 		return err
 	}
-	err = memcache.Set(appengine.NewContext(r), &memcache.Item{
-		Key:   session.ID,
-		Value: serialized,
+	c := appengine.NewContext(r)
+	var expiration time.Duration
+	if session.Options.MaxAge > 0 {
+		expiration = time.Duration(session.Options.MaxAge) * time.Second
+	}
+	c.Debugf("MemcacheStore.Save. session.ID=%s, expiration=%s",
+		session.ID, expiration)
+	err = memcache.Set(c, &memcache.Item{
+		Key:        session.ID,
+		Value:      serialized,
+		Expiration: expiration,
 	})
 	if err != nil {
 		return err
