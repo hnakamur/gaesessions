@@ -6,8 +6,10 @@ package gaesessions
 
 import (
 	"bytes"
+	"encoding/base32"
 	"encoding/gob"
 	"net/http"
+	"strings"
 	"time"
 
 	"appengine"
@@ -86,7 +88,10 @@ func (s *DatastoreStore) New(r *http.Request, name string) (*sessions.Session,
 func (s *DatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 	session *sessions.Session) error {
 	if session.ID == "" {
-		session.ID = string(securecookie.GenerateRandomKey(32))
+		session.ID =
+			strings.TrimRight(
+				base32.StdEncoding.EncodeToString(
+					securecookie.GenerateRandomKey(32)), "=")
 	}
 	if err := s.save(r, session); err != nil {
 		return err
@@ -202,7 +207,10 @@ func (s *MemcacheStore) New(r *http.Request, name string) (*sessions.Session,
 func (s *MemcacheStore) Save(r *http.Request, w http.ResponseWriter,
 	session *sessions.Session) error {
 	if session.ID == "" {
-		session.ID = s.prefix + string(securecookie.GenerateRandomKey(32))
+		session.ID = s.prefix +
+			strings.TrimRight(
+				base32.StdEncoding.EncodeToString(
+					securecookie.GenerateRandomKey(32)), "=")
 	}
 	if err := s.save(r, session); err != nil {
 		return err
