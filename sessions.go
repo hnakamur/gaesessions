@@ -14,7 +14,9 @@ import (
 
 	"appengine"
 	"appengine/datastore"
+	"appengine/delay"
 	"appengine/memcache"
+	"appengine/taskqueue"
 
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
@@ -24,8 +26,9 @@ import (
 
 // Session is used to load and save session data in the datastore.
 type Session struct {
-	Date  time.Time
-	Value []byte
+	Date       time.Time
+	Expiration time.Duration
+	Value      []byte
 }
 
 // NewDatastoreStore returns a new DatastoreStore.
@@ -119,12 +122,32 @@ func (s *DatastoreStore) save(r *http.Request,
 	}
 	c := appengine.NewContext(r)
 	k := datastore.NewKey(c, s.kind, session.ID, 0, nil)
+	var expiration time.Duration
+	if session.Options.MaxAge > 0 {
+		expiration = time.Duration(session.Options.MaxAge) * time.Second
+	}
 	k, err = datastore.Put(c, k, &Session{
-		Date:  time.Now(),
-		Value: serialized,
+		Date:       time.Now(),
+		Expiration: expiration,
+		Value:      serialized,
 	})
 	if err != nil {
 		return err
+	}
+	if session.Options.MaxAge > 0 {
+		taskKey := strings.TrimRight(
+			base32.StdEncoding.EncodeToString(
+				securecookie.GenerateRandomKey(32)), "=")
+		laterFunc := delay.Func(taskKey, expireFunc)
+		task, err := laterFunc.Task(s.kind, session.ID)
+		if err != nil {
+			return err
+		}
+		task.Delay = expiration
+		task, err = taskqueue.Add(c, task, "")
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -141,6 +164,34 @@ func (s *DatastoreStore) load(r *http.Request,
 	}
 	if err := deserialize(entity.Value, &session.Values); err != nil {
 		return err
+	}
+	return nil
+}
+
+func expireFunc(c appengine.Context, kind, sessionID string) error {
+	c.Debugf("DatastoreStore expireFunc start session.ID=%s", sessionID)
+	k := datastore.NewKey(c, kind, sessionID, 0, nil)
+	entity := Session{}
+	if err := datastore.Get(c, k, &entity); err != nil {
+		c.Errorf("DatastoreStore expireFunc datastore.Get failed. session.ID=%s, err=%s", sessionID, err.Error())
+		return err
+	}
+	session := sessions.Session{
+		Values: make(map[interface{}]interface{}),
+	}
+	if err := deserialize(entity.Value, &session.Values); err != nil {
+		c.Errorf("DatastoreStore expireFunc deserialize failed. session.ID=%s, err=%s", sessionID, err.Error())
+		return err
+	}
+	now := time.Now()
+	expirationTime := entity.Date.Add(entity.Expiration)
+	if now.After(expirationTime) {
+		err := datastore.Delete(c, k)
+		if err != nil {
+			c.Errorf("DatastoreStore expireFunc Delete session.ID=%s, now=%s, expirationTime=%s, err=%s", sessionID, now, expirationTime, err.Error())
+			return err
+		}
+		c.Debugf("DatastoreStore expireFunc Delete done. session.ID=%s", sessionID)
 	}
 	return nil
 }
