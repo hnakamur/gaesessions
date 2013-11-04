@@ -14,8 +14,8 @@ import (
 	"appengine/datastore"
 	"appengine/memcache"
 
-	"code.google.com/p/gorilla/securecookie"
-	"code.google.com/p/gorilla/sessions"
+	"github.com/gorilla/securecookie"
+	"github.com/gorilla/sessions"
 )
 
 // DatastoreStore -------------------------------------------------------------
