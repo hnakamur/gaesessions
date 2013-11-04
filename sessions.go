@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"time"
 
+	"appengine"
 	"appengine/datastore"
 	"appengine/memcache"
 
-	"code.google.com/p/gorilla/appengine/context"
 	"code.google.com/p/gorilla/securecookie"
 	"code.google.com/p/gorilla/sessions"
 )
@@ -112,7 +112,7 @@ func (s *DatastoreStore) save(r *http.Request,
 	if err != nil {
 		return err
 	}
-	c := context.New(r)
+	c := appengine.NewContext(r)
 	k := datastore.NewKey(c, s.kind, session.ID, 0, nil)
 	k, err = datastore.Put(c, k, &Session{
 		Date:  time.Now(),
@@ -128,7 +128,7 @@ func (s *DatastoreStore) save(r *http.Request,
 // session.Values.
 func (s *DatastoreStore) load(r *http.Request,
 	session *sessions.Session) error {
-	c := context.New(r)
+	c := appengine.NewContext(r)
 	k := datastore.NewKey(c, s.kind, session.ID, 0, nil)
 	entity := Session{}
 	if err := datastore.Get(c, k, &entity); err != nil {
@@ -228,7 +228,7 @@ func (s *MemcacheStore) save(r *http.Request,
 	if err != nil {
 		return err
 	}
-	err = memcache.Set(context.New(r), &memcache.Item{
+	err = memcache.Set(appengine.NewContext(r), &memcache.Item{
 		Key:   session.ID,
 		Value: serialized,
 	})
@@ -241,7 +241,7 @@ func (s *MemcacheStore) save(r *http.Request,
 // load gets a value from memcache and decodes its content into session.Values.
 func (s *MemcacheStore) load(r *http.Request,
 	session *sessions.Session) error {
-	item, err := memcache.Get(context.New(r), session.ID)
+	item, err := memcache.Get(appengine.NewContext(r), session.ID)
 	if err != nil {
 		return err
 	}
