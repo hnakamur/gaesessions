@@ -26,9 +26,9 @@ import (
 
 // Session is used to load and save session data in the datastore.
 type Session struct {
-	Date       time.Time
-	Expiration time.Duration
-	Value      []byte
+	Date           time.Time
+	ExpirationDate time.Time
+	Value          []byte
 }
 
 // NewDatastoreStore returns a new DatastoreStore.
@@ -122,14 +122,16 @@ func (s *DatastoreStore) save(r *http.Request,
 	}
 	c := appengine.NewContext(r)
 	k := datastore.NewKey(c, s.kind, session.ID, 0, nil)
-	var expiration time.Duration
+	now := time.Now()
+	var expirationDate time.Time
 	if session.Options.MaxAge > 0 {
-		expiration = time.Duration(session.Options.MaxAge) * time.Second
+		expiration := time.Duration(session.Options.MaxAge) * time.Second
+		expirationDate = now.Add(expiration)
 	}
 	k, err = datastore.Put(c, k, &Session{
-		Date:       time.Now(),
-		Expiration: expiration,
-		Value:      serialized,
+		Date:           now,
+		ExpirationDate: expirationDate,
+		Value:          serialized,
 	})
 	if err != nil {
 		return err
@@ -143,7 +145,7 @@ func (s *DatastoreStore) save(r *http.Request,
 		if err != nil {
 			return err
 		}
-		task.Delay = expiration
+		task.ETA = expirationDate
 		task, err = taskqueue.Add(c, task, "")
 		if err != nil {
 			return err
@@ -184,11 +186,10 @@ func expireFunc(c appengine.Context, kind, sessionID string) error {
 		return err
 	}
 	now := time.Now()
-	expirationTime := entity.Date.Add(entity.Expiration)
-	if now.After(expirationTime) {
+	if now.After(entity.ExpirationDate) {
 		err := datastore.Delete(c, k)
 		if err != nil {
-			c.Errorf("DatastoreStore expireFunc Delete session.ID=%s, now=%s, expirationTime=%s, err=%s", sessionID, now, expirationTime, err.Error())
+			c.Errorf("DatastoreStore expireFunc Delete session.ID=%s, now=%s, expirationDate=%s, err=%s", sessionID, now, entity.ExpirationDate, err.Error())
 			return err
 		}
 		c.Debugf("DatastoreStore expireFunc Delete done. session.ID=%s", sessionID)
