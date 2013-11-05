@@ -22,6 +22,99 @@ import (
 	"github.com/gorilla/sessions"
 )
 
+// MemcacheDatastoreStore -----------------------------------------------------
+
+// NewMemcacheDatastoreStore returns a new MemcacheDatastoreStore.
+//
+// The kind argument is the kind name used to store the session data.
+// If empty it will use "Session".
+//
+// See NewCookieStore() for a description of the other parameters.
+func NewMemcacheDatastoreStore(kind, keyPrefix string, keyPairs ...[]byte) *MemcacheDatastoreStore {
+	if kind == "" {
+		kind = "Session"
+	}
+	if keyPrefix == "" {
+		keyPrefix = "gorilla.appengine.sessions."
+	}
+	return &MemcacheDatastoreStore{
+		Codecs: securecookie.CodecsFromPairs(keyPairs...),
+		Options: &sessions.Options{
+			Path:   "/",
+			MaxAge: 86400 * 30,
+		},
+		kind:   kind,
+		prefix: keyPrefix,
+	}
+}
+
+type MemcacheDatastoreStore struct {
+	Codecs  []securecookie.Codec
+	Options *sessions.Options // default configuration
+	kind    string
+	prefix  string
+}
+
+// Get returns a session for the given name after adding it to the registry.
+//
+// See CookieStore.Get().
+func (s *MemcacheDatastoreStore) Get(r *http.Request, name string) (
+	*sessions.Session, error) {
+	return sessions.GetRegistry(r).Get(s, name)
+}
+
+// New returns a session for the given name without adding it to the registry.
+//
+// See CookieStore.New().
+func (s *MemcacheDatastoreStore) New(r *http.Request, name string) (*sessions.Session,
+	error) {
+	session := sessions.NewSession(s, name)
+	session.Options = &(*s.Options)
+	session.IsNew = true
+	var err error
+	if cookie, errCookie := r.Cookie(name); errCookie == nil {
+		err = securecookie.DecodeMulti(name, cookie.Value, &session.ID,
+			s.Codecs...)
+		if err == nil {
+			c := appengine.NewContext(r)
+			err = loadFromMemcache(c, session)
+			if err == memcache.ErrCacheMiss {
+				err = loadFromDatastore(c, s.kind, session)
+			}
+			if err == nil {
+				session.IsNew = false
+			}
+		}
+	}
+	return session, err
+}
+
+// Save adds a single session to the response.
+func (s *MemcacheDatastoreStore) Save(r *http.Request, w http.ResponseWriter,
+	session *sessions.Session) error {
+	if session.ID == "" {
+		session.ID = s.prefix +
+			strings.TrimRight(
+				base32.StdEncoding.EncodeToString(
+					securecookie.GenerateRandomKey(32)), "=")
+	}
+	c := appengine.NewContext(r)
+	if err := saveToMemcache(c, session); err != nil {
+		return err
+	}
+	if err := saveToDatastore(c, s.kind, session); err != nil {
+		return err
+	}
+	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID,
+		s.Codecs...)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, sessions.NewCookie(session.Name(), encoded,
+		session.Options))
+	return nil
+}
+
 // DatastoreStore -------------------------------------------------------------
 
 // Session is used to load and save session data in the datastore.
@@ -75,10 +168,12 @@ func (s *DatastoreStore) New(r *http.Request, name string) (*sessions.Session,
 	session.Options = &(*s.Options)
 	session.IsNew = true
 	var err error
-	if c, errCookie := r.Cookie(name); errCookie == nil {
-		err = securecookie.DecodeMulti(name, c.Value, &session.ID, s.Codecs...)
+	if cookie, errCookie := r.Cookie(name); errCookie == nil {
+		err = securecookie.DecodeMulti(name, cookie.Value, &session.ID,
+			s.Codecs...)
 		if err == nil {
-			err = s.load(r, session)
+			c := appengine.NewContext(r)
+			err = loadFromDatastore(c, s.kind, session)
 			if err == nil {
 				session.IsNew = false
 			}
@@ -96,7 +191,8 @@ func (s *DatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 				base32.StdEncoding.EncodeToString(
 					securecookie.GenerateRandomKey(32)), "=")
 	}
-	if err := s.save(r, session); err != nil {
+	c := appengine.NewContext(r)
+	if err := saveToDatastore(c, s.kind, session); err != nil {
 		return err
 	}
 	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID,
@@ -110,7 +206,7 @@ func (s *DatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 }
 
 // save writes encoded session.Values to datastore.
-func (s *DatastoreStore) save(r *http.Request,
+func saveToDatastore(c appengine.Context, kind string,
 	session *sessions.Session) error {
 	if len(session.Values) == 0 {
 		// Don't need to write anything.
@@ -120,8 +216,7 @@ func (s *DatastoreStore) save(r *http.Request,
 	if err != nil {
 		return err
 	}
-	c := appengine.NewContext(r)
-	k := datastore.NewKey(c, s.kind, session.ID, 0, nil)
+	k := datastore.NewKey(c, kind, session.ID, 0, nil)
 	now := time.Now()
 	var expirationDate time.Time
 	if session.Options.MaxAge > 0 {
@@ -137,7 +232,7 @@ func (s *DatastoreStore) save(r *http.Request,
 			return err
 		}
 
-		task, err := expireSessionLater.Task(s.kind, session.ID)
+		task, err := expireSessionLater.Task(kind, session.ID)
 		if err != nil {
 			return err
 		}
@@ -157,10 +252,9 @@ func (s *DatastoreStore) save(r *http.Request,
 
 // load gets a value from datastore and decodes its content into
 // session.Values.
-func (s *DatastoreStore) load(r *http.Request,
+func loadFromDatastore(c appengine.Context, kind string,
 	session *sessions.Session) error {
-	c := appengine.NewContext(r)
-	k := datastore.NewKey(c, s.kind, session.ID, 0, nil)
+	k := datastore.NewKey(c, kind, session.ID, 0, nil)
 	entity := Session{}
 	if err := datastore.Get(c, k, &entity); err != nil {
 		return err
@@ -250,10 +344,12 @@ func (s *MemcacheStore) New(r *http.Request, name string) (*sessions.Session,
 	session.Options = &(*s.Options)
 	session.IsNew = true
 	var err error
-	if c, errCookie := r.Cookie(name); errCookie == nil {
-		err = securecookie.DecodeMulti(name, c.Value, &session.ID, s.Codecs...)
+	if cookie, errCookie := r.Cookie(name); errCookie == nil {
+		err = securecookie.DecodeMulti(name, cookie.Value, &session.ID,
+			s.Codecs...)
 		if err == nil {
-			err = s.load(r, session)
+			c := appengine.NewContext(r)
+			err = loadFromMemcache(c, session)
 			if err == nil {
 				session.IsNew = false
 			}
@@ -271,7 +367,8 @@ func (s *MemcacheStore) Save(r *http.Request, w http.ResponseWriter,
 				base32.StdEncoding.EncodeToString(
 					securecookie.GenerateRandomKey(32)), "=")
 	}
-	if err := s.save(r, session); err != nil {
+	c := appengine.NewContext(r)
+	if err := saveToMemcache(c, session); err != nil {
 		return err
 	}
 	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID,
@@ -285,8 +382,7 @@ func (s *MemcacheStore) Save(r *http.Request, w http.ResponseWriter,
 }
 
 // save writes encoded session.Values to memcache.
-func (s *MemcacheStore) save(r *http.Request,
-	session *sessions.Session) error {
+func saveToMemcache(c appengine.Context, session *sessions.Session) error {
 	if len(session.Values) == 0 {
 		// Don't need to write anything.
 		return nil
@@ -295,7 +391,6 @@ func (s *MemcacheStore) save(r *http.Request,
 	if err != nil {
 		return err
 	}
-	c := appengine.NewContext(r)
 	var expiration time.Duration
 	if session.Options.MaxAge > 0 {
 		expiration = time.Duration(session.Options.MaxAge) * time.Second
@@ -320,9 +415,8 @@ func (s *MemcacheStore) save(r *http.Request,
 }
 
 // load gets a value from memcache and decodes its content into session.Values.
-func (s *MemcacheStore) load(r *http.Request,
-	session *sessions.Session) error {
-	item, err := memcache.Get(appengine.NewContext(r), session.ID)
+func loadFromMemcache(c appengine.Context, session *sessions.Session) error {
+	item, err := memcache.Get(c, session.ID)
 	if err != nil {
 		return err
 	}
