@@ -196,7 +196,7 @@ func expireSession(c appengine.Context, kind, sessionID string) error {
 	if now.After(entity.ExpirationDate) {
 		err := datastore.Delete(c, k)
 		if err != nil {
-			c.Errorf("DatastoreStore expireSession Delete session.ID=%s, now=%s, expirationDate=%s, err=%s", sessionID, now, entity.ExpirationDate, err.Error())
+			c.Errorf("DatastoreStore expireSession delete session.ID=%s, now=%s, expirationDate=%s, err=%s", sessionID, now, entity.ExpirationDate, err.Error())
 			return err
 		}
 		c.Debugf("DatastoreStore expireSession delete done. session.ID=%s", sessionID)
@@ -299,16 +299,22 @@ func (s *MemcacheStore) save(r *http.Request,
 	var expiration time.Duration
 	if session.Options.MaxAge > 0 {
 		expiration = time.Duration(session.Options.MaxAge) * time.Second
-	}
-	c.Debugf("MemcacheStore.Save. session.ID=%s, expiration=%s",
-		session.ID, expiration)
-	err = memcache.Set(c, &memcache.Item{
-		Key:        session.ID,
-		Value:      serialized,
-		Expiration: expiration,
-	})
-	if err != nil {
-		return err
+		c.Debugf("MemcacheStore.save. session.ID=%s, expiration=%s",
+			session.ID, expiration)
+		err = memcache.Set(c, &memcache.Item{
+			Key:        session.ID,
+			Value:      serialized,
+			Expiration: expiration,
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		err = memcache.Delete(c, session.ID)
+		if err != nil {
+			return err
+		}
+		c.Debugf("MemcacheStore.save. delete session.ID=%s", session.ID)
 	}
 	return nil
 }
