@@ -22,6 +22,7 @@ import (
 
 // MemcacheDatastoreStore -----------------------------------------------------
 
+const DefaultNonPersistentSessionDuration = time.Duration(24) * time.Hour
 const defaultKind = "Session"
 
 // NewMemcacheDatastoreStore returns a new MemcacheDatastoreStore.
@@ -30,7 +31,7 @@ const defaultKind = "Session"
 // If empty it will use "Session".
 //
 // See NewCookieStore() for a description of the other parameters.
-func NewMemcacheDatastoreStore(kind, keyPrefix string, keyPairs ...[]byte) *MemcacheDatastoreStore {
+func NewMemcacheDatastoreStore(kind, keyPrefix string, nonPersistentSessionDuration time.Duration, keyPairs ...[]byte) *MemcacheDatastoreStore {
 	if kind == "" {
 		kind = defaultKind
 	}
@@ -45,14 +46,16 @@ func NewMemcacheDatastoreStore(kind, keyPrefix string, keyPairs ...[]byte) *Memc
 		},
 		kind:   kind,
 		prefix: keyPrefix,
+		nonPersistentSessionDuration: nonPersistentSessionDuration,
 	}
 }
 
 type MemcacheDatastoreStore struct {
-	Codecs  []securecookie.Codec
-	Options *sessions.Options // default configuration
-	kind    string
-	prefix  string
+	Codecs                       []securecookie.Codec
+	Options                      *sessions.Options // default configuration
+	kind                         string
+	prefix                       string
+	nonPersistentSessionDuration time.Duration
 }
 
 // Get returns a session for the given name after adding it to the registry.
@@ -99,10 +102,10 @@ func (s *MemcacheDatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 					securecookie.GenerateRandomKey(32)), "=")
 	}
 	c := appengine.NewContext(r)
-	if err := saveToMemcache(c, session); err != nil {
+	if err := saveToMemcache(c, s.nonPersistentSessionDuration, session); err != nil {
 		return err
 	}
-	if err := saveToDatastore(c, s.kind, session); err != nil {
+	if err := saveToDatastore(c, s.kind, s.nonPersistentSessionDuration, session); err != nil {
 		return err
 	}
 	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID,
@@ -130,7 +133,7 @@ type Session struct {
 // If empty it will use "Session".
 //
 // See NewCookieStore() for a description of the other parameters.
-func NewDatastoreStore(kind string, keyPairs ...[]byte) *DatastoreStore {
+func NewDatastoreStore(kind string, nonPersistentSessionDuration time.Duration, keyPairs ...[]byte) *DatastoreStore {
 	if kind == "" {
 		kind = "Session"
 	}
@@ -141,14 +144,16 @@ func NewDatastoreStore(kind string, keyPairs ...[]byte) *DatastoreStore {
 			MaxAge: 86400 * 30,
 		},
 		kind: kind,
+		nonPersistentSessionDuration: nonPersistentSessionDuration,
 	}
 }
 
 // DatastoreStore stores sessions in the App Engine datastore.
 type DatastoreStore struct {
-	Codecs  []securecookie.Codec
-	Options *sessions.Options // default configuration
-	kind    string
+	Codecs                       []securecookie.Codec
+	Options                      *sessions.Options // default configuration
+	kind                         string
+	nonPersistentSessionDuration time.Duration
 }
 
 // Get returns a session for the given name after adding it to the registry.
@@ -192,7 +197,7 @@ func (s *DatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 					securecookie.GenerateRandomKey(32)), "=")
 	}
 	c := appengine.NewContext(r)
-	if err := saveToDatastore(c, s.kind, session); err != nil {
+	if err := saveToDatastore(c, s.kind, s.nonPersistentSessionDuration, session); err != nil {
 		return err
 	}
 	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID,
@@ -207,6 +212,7 @@ func (s *DatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 
 // save writes encoded session.Values to datastore.
 func saveToDatastore(c appengine.Context, kind string,
+	nonPersistentSessionDuration time.Duration,
 	session *sessions.Session) error {
 	if len(session.Values) == 0 {
 		// Don't need to write anything.
@@ -219,10 +225,14 @@ func saveToDatastore(c appengine.Context, kind string,
 	k := datastore.NewKey(c, kind, session.ID, 0, nil)
 	now := time.Now()
 	var expirationDate time.Time
+	var expiration time.Duration
 	if session.Options.MaxAge > 0 {
-		expiration := time.Duration(session.Options.MaxAge) * time.Second
+		expiration = time.Duration(session.Options.MaxAge) * time.Second
+	} else {
+		expiration = nonPersistentSessionDuration
+	}
+	if expiration > 0 {
 		expirationDate = now.Add(expiration)
-
 		k, err = datastore.Put(c, k, &Session{
 			Date:           now,
 			ExpirationDate: expirationDate,
@@ -306,7 +316,7 @@ func findExpiredDatastoreSessionKeys(c appengine.Context, kind string) (keys []*
 // will use "gorilla.appengine.sessions.".
 //
 // See NewCookieStore() for a description of the other parameters.
-func NewMemcacheStore(keyPrefix string, keyPairs ...[]byte) *MemcacheStore {
+func NewMemcacheStore(keyPrefix string, nonPersistentSessionDuration time.Duration, keyPairs ...[]byte) *MemcacheStore {
 	if keyPrefix == "" {
 		keyPrefix = "gorilla.appengine.sessions."
 	}
@@ -317,14 +327,16 @@ func NewMemcacheStore(keyPrefix string, keyPairs ...[]byte) *MemcacheStore {
 			MaxAge: 86400 * 30,
 		},
 		prefix: keyPrefix,
+		nonPersistentSessionDuration: nonPersistentSessionDuration,
 	}
 }
 
 // MemcacheStore stores sessions in the App Engine memcache.
 type MemcacheStore struct {
-	Codecs  []securecookie.Codec
-	Options *sessions.Options // default configuration
-	prefix  string
+	Codecs                       []securecookie.Codec
+	Options                      *sessions.Options // default configuration
+	prefix                       string
+	nonPersistentSessionDuration time.Duration
 }
 
 // Get returns a session for the given name after adding it to the registry.
@@ -368,7 +380,7 @@ func (s *MemcacheStore) Save(r *http.Request, w http.ResponseWriter,
 					securecookie.GenerateRandomKey(32)), "=")
 	}
 	c := appengine.NewContext(r)
-	if err := saveToMemcache(c, session); err != nil {
+	if err := saveToMemcache(c, s.nonPersistentSessionDuration, session); err != nil {
 		return err
 	}
 	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID,
@@ -382,7 +394,9 @@ func (s *MemcacheStore) Save(r *http.Request, w http.ResponseWriter,
 }
 
 // save writes encoded session.Values to memcache.
-func saveToMemcache(c appengine.Context, session *sessions.Session) error {
+func saveToMemcache(c appengine.Context,
+	nonPersistentSessionDuration time.Duration,
+	session *sessions.Session) error {
 	if len(session.Values) == 0 {
 		// Don't need to write anything.
 		return nil
@@ -394,6 +408,10 @@ func saveToMemcache(c appengine.Context, session *sessions.Session) error {
 	var expiration time.Duration
 	if session.Options.MaxAge > 0 {
 		expiration = time.Duration(session.Options.MaxAge) * time.Second
+	} else {
+		expiration = nonPersistentSessionDuration
+	}
+	if expiration > 0 {
 		c.Debugf("MemcacheStore.save. session.ID=%s, expiration=%s",
 			session.ID, expiration)
 		err = memcache.Set(c, &memcache.Item{
