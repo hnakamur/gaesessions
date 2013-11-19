@@ -14,15 +14,15 @@ import (
 
 	"appengine"
 	"appengine/datastore"
-	"appengine/delay"
 	"appengine/memcache"
-	"appengine/taskqueue"
 
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
 )
 
 // MemcacheDatastoreStore -----------------------------------------------------
+
+const defaultKind = "Session"
 
 // NewMemcacheDatastoreStore returns a new MemcacheDatastoreStore.
 //
@@ -32,7 +32,7 @@ import (
 // See NewCookieStore() for a description of the other parameters.
 func NewMemcacheDatastoreStore(kind, keyPrefix string, keyPairs ...[]byte) *MemcacheDatastoreStore {
 	if kind == "" {
-		kind = "Session"
+		kind = defaultKind
 	}
 	if keyPrefix == "" {
 		keyPrefix = "gorilla.appengine.sessions."
@@ -231,16 +231,6 @@ func saveToDatastore(c appengine.Context, kind string,
 		if err != nil {
 			return err
 		}
-
-		task, err := expireSessionLater.Task(kind, session.ID)
-		if err != nil {
-			return err
-		}
-		task.ETA = expirationDate
-		task, err = taskqueue.Add(c, task, "")
-		if err != nil {
-			return err
-		}
 	} else {
 		err = datastore.Delete(c, k)
 		if err != nil {
@@ -265,37 +255,47 @@ func loadFromDatastore(c appengine.Context, kind string,
 	return nil
 }
 
-var expireSessionLater = delay.Func("expireSession", expireSession)
+// remove expired sessions in the datastore. you can call this function
+// from a cron job.
+//
+// sample handler config in app.yaml:
+// handlers:
+// - url: /tasks/removeExpiredSessions
+//   script: _go_app
+//   login: admin
+// - url: /.*
+//   script: _go_app
+//
+// handler registration code:
+// http.HandleFunc("/tasks/removeExpiredSessions", removeExpiredSessionsHandler)
+//
+// sample handler:
+// func removeExpiredSessionsHandler(w http.ResponseWriter, r *http.Request) {
+//	c := appengine.NewContext(r)
+//	gaesessions.RemoveExpiredDatastoreSessions(c, "")
+// }
+//
+// sample cron.yaml:
+// cron:
+// - description: expired session removal job
+//   url: /tasks/removeExpiredSessions
+//   schedule: every 1 minutes
+func RemoveExpiredDatastoreSessions(c appengine.Context, kind string) error {
+	keys, err := findExpiredDatastoreSessionKeys(c, kind)
+	if err != nil {
+		return err
+	}
+	return datastore.DeleteMulti(c, keys)
+}
 
-func expireSession(c appengine.Context, kind, sessionID string) error {
-	c.Debugf("DatastoreStore expireSession start session.ID=%s", sessionID)
-	k := datastore.NewKey(c, kind, sessionID, 0, nil)
-	entity := Session{}
-	if err := datastore.Get(c, k, &entity); err != nil {
-		if err == datastore.ErrNoSuchEntity {
-			// Already deleted. Do nothing.
-			return nil
-		}
-		c.Errorf("DatastoreStore expireSession datastore.Get failed. session.ID=%s, err=%s", sessionID, err.Error())
-		return err
-	}
-	session := sessions.Session{
-		Values: make(map[interface{}]interface{}),
-	}
-	if err := deserialize(entity.Value, &session.Values); err != nil {
-		c.Errorf("DatastoreStore expireSession deserialize failed. session.ID=%s, err=%s", sessionID, err.Error())
-		return err
+func findExpiredDatastoreSessionKeys(c appengine.Context, kind string) (keys []*datastore.Key, err error) {
+	if kind == "" {
+		kind = defaultKind
 	}
 	now := time.Now()
-	if now.After(entity.ExpirationDate) {
-		err := datastore.Delete(c, k)
-		if err != nil {
-			c.Errorf("DatastoreStore expireSession delete session.ID=%s, now=%s, expirationDate=%s, err=%s", sessionID, now, entity.ExpirationDate, err.Error())
-			return err
-		}
-		c.Debugf("DatastoreStore expireSession delete done. session.ID=%s", sessionID)
-	}
-	return nil
+	q := datastore.NewQuery(kind).Filter("ExpirationDate <=", now).KeysOnly()
+	keys, err = q.GetAll(c, nil)
+	return
 }
 
 // MemcacheStore --------------------------------------------------------------
