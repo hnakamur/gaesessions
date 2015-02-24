@@ -72,7 +72,8 @@ func (s *MemcacheDatastoreStore) Get(r *http.Request, name string) (
 func (s *MemcacheDatastoreStore) New(r *http.Request, name string) (*sessions.Session,
 	error) {
 	session := sessions.NewSession(s, name)
-	session.Options = &(*s.Options)
+	opts := *s.Options
+	session.Options = &opts
 	session.IsNew = true
 	var err error
 	if cookie, errCookie := r.Cookie(name); errCookie == nil {
@@ -170,7 +171,8 @@ func (s *DatastoreStore) Get(r *http.Request, name string) (*sessions.Session,
 func (s *DatastoreStore) New(r *http.Request, name string) (*sessions.Session,
 	error) {
 	session := sessions.NewSession(s, name)
-	session.Options = &(*s.Options)
+	opts := *s.Options
+	session.Options = &opts
 	session.IsNew = true
 	var err error
 	if cookie, errCookie := r.Cookie(name); errCookie == nil {
@@ -353,7 +355,8 @@ func (s *MemcacheStore) Get(r *http.Request, name string) (*sessions.Session,
 func (s *MemcacheStore) New(r *http.Request, name string) (*sessions.Session,
 	error) {
 	session := sessions.NewSession(s, name)
-	session.Options = &(*s.Options)
+	opts := *s.Options
+	session.Options = &opts
 	session.IsNew = true
 	var err error
 	if cookie, errCookie := r.Cookie(name); errCookie == nil {
