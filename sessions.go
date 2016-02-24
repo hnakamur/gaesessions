@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"appengine"
-	"appengine/datastore"
-	"appengine/memcache"
+	"google.golang.org/appengine"
+	"google.golang.org/appengine/datastore"
+	"google.golang.org/appengine/memcache"
+	"google.golang.org/appengine/log"
+	"golang.org/x/net/context"
 
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
@@ -211,7 +213,7 @@ func (s *DatastoreStore) Save(r *http.Request, w http.ResponseWriter,
 }
 
 // save writes encoded session.Values to datastore.
-func saveToDatastore(c appengine.Context, kind string,
+func saveToDatastore(c context.Context, kind string,
 	nonPersistentSessionDuration time.Duration,
 	session *sessions.Session) error {
 	if len(session.Values) == 0 {
@@ -252,7 +254,7 @@ func saveToDatastore(c appengine.Context, kind string,
 
 // load gets a value from datastore and decodes its content into
 // session.Values.
-func loadFromDatastore(c appengine.Context, kind string,
+func loadFromDatastore(c context.Context, kind string,
 	session *sessions.Session) error {
 	k := datastore.NewKey(c, kind, session.ID, 0, nil)
 	entity := Session{}
@@ -290,7 +292,7 @@ func loadFromDatastore(c appengine.Context, kind string,
 // - description: expired session removal job
 //   url: /tasks/removeExpiredSessions
 //   schedule: every 1 minutes
-func RemoveExpiredDatastoreSessions(c appengine.Context, kind string) error {
+func RemoveExpiredDatastoreSessions(c context.Context, kind string) error {
 	keys, err := findExpiredDatastoreSessionKeys(c, kind)
 	if err != nil {
 		return err
@@ -298,7 +300,7 @@ func RemoveExpiredDatastoreSessions(c appengine.Context, kind string) error {
 	return datastore.DeleteMulti(c, keys)
 }
 
-func findExpiredDatastoreSessionKeys(c appengine.Context, kind string) (keys []*datastore.Key, err error) {
+func findExpiredDatastoreSessionKeys(c context.Context, kind string) (keys []*datastore.Key, err error) {
 	if kind == "" {
 		kind = defaultKind
 	}
@@ -394,7 +396,7 @@ func (s *MemcacheStore) Save(r *http.Request, w http.ResponseWriter,
 }
 
 // save writes encoded session.Values to memcache.
-func saveToMemcache(c appengine.Context,
+func saveToMemcache(c context.Context,
 	nonPersistentSessionDuration time.Duration,
 	session *sessions.Session) error {
 	if len(session.Values) == 0 {
@@ -412,7 +414,7 @@ func saveToMemcache(c appengine.Context,
 		expiration = nonPersistentSessionDuration
 	}
 	if expiration > 0 {
-		c.Debugf("MemcacheStore.save. session.ID=%s, expiration=%s",
+		log.Debugf(c, "MemcacheStore.save. session.ID=%s, expiration=%s",
 			session.ID, expiration)
 		err = memcache.Set(c, &memcache.Item{
 			Key:        session.ID,
@@ -427,13 +429,13 @@ func saveToMemcache(c appengine.Context,
 		if err != nil {
 			return err
 		}
-		c.Debugf("MemcacheStore.save. delete session.ID=%s", session.ID)
+		log.Debugf(c, "MemcacheStore.save. delete session.ID=%s", session.ID)
 	}
 	return nil
 }
 
 // load gets a value from memcache and decodes its content into session.Values.
-func loadFromMemcache(c appengine.Context, session *sessions.Session) error {
+func loadFromMemcache(c context.Context, session *sessions.Session) error {
 	item, err := memcache.Get(c, session.ID)
 	if err != nil {
 		return err
